@@ -1,15 +1,44 @@
 #!/usr/bin/env python3
-import os, httpx
+import os, httpx, json
 from typing import Optional, List, Dict, Any
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+from fastmcp.server.middleware import Middleware, MiddlewareContext
 from dotenv import load_dotenv
+import fastmcp
 
 load_dotenv()
 
 TODOIST_API = "https://api.todoist.com/api/v1"
 TOKEN = os.environ["TODOIST_API_TOKEN"]  # put your token in Render/Heroku env
 BEARER_TOKEN = os.environ.get("MCP_BEARER_TOKEN")  # Bearer token for MCP server authentication
+
+class RequestLoggingMiddleware(Middleware):
+    async def on_request(self, context: MiddlewareContext, call_next):
+        """Log incoming request details."""
+        print("--- Incoming Request ---")
+        print(f"Method: {context.method}")
+        print(f"Source: {context.source}")
+        
+        if hasattr(context, 'message'):
+            print(f"Message: {context.message}")
+
+        if hasattr(context, 'fastmcp_context'):
+            request = context.fastmcp_context.get_http_request()
+            if request:
+                print("--- HTTP Request ---")
+                print(f"Headers: {dict(request.headers)}")
+                try:
+                    body = await request.json()
+                    print(f"Body: {json.dumps(body, indent=2)}")
+                except json.JSONDecodeError:
+                    body = await request.body()
+                    print(f"Body: {body.decode(errors='ignore')}")
+
+
+        print("------------------------")
+        
+        return await call_next(context)
 
 # Configure authentication using FastMCP's built-in token verification
 auth_verifier = None
@@ -25,6 +54,7 @@ if BEARER_TOKEN:
     )
 
 mcp = FastMCP("Todoist MCP", auth=auth_verifier)
+mcp.add_middleware(RequestLoggingMiddleware())
 
 def auth_headers() -> Dict[str, str]:
     return {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
