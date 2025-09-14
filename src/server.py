@@ -1,58 +1,17 @@
 #!/usr/bin/env python3
 import os, httpx, json
+from datetime import datetime, date
 from typing import Optional, List, Dict, Any
 from fastmcp import FastMCP
-from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
-from fastmcp.server.middleware import Middleware, MiddlewareContext
 from dotenv import load_dotenv
 import fastmcp
 
 load_dotenv()
 
 TODOIST_API = "https://api.todoist.com/api/v1"
-TOKEN = os.environ["TODOIST_API_TOKEN"]  # put your token in Render/Heroku env
-BEARER_TOKEN = os.environ.get("MCP_BEARER_TOKEN")  # Bearer token for MCP server authentication
+TOKEN = os.environ.get("TODOIST_API_TOKEN")
 
-class RequestLoggingMiddleware(Middleware):
-    async def on_request(self, context: MiddlewareContext, call_next):
-        """Log incoming request details."""
-        print("--- Incoming Request ---")
-        print(f"Method: {context.method}")
-        print(f"Source: {context.source}")
-        
-        if hasattr(context, 'message'):
-            print(f"Message: {context.message}")
-
-        if hasattr(context, 'fastmcp_context'):
-            request = context.fastmcp_context.get_http_request()
-            if request:
-                print("--- HTTP Request ---")
-                print(f"Headers: {dict(request.headers)}")
-                try:
-                    body = await request.json()
-                    print(f"Body: {json.dumps(body, indent=2)}")
-                except json.JSONDecodeError:
-                    body = await request.body()
-                    print(f"Body: {body.decode(errors='ignore')}")
-
-
-        print("------------------------")
-        
-        return await call_next(context)
-
-# Configure authentication using FastMCP's built-in token verification
-auth_verifier = None
-if BEARER_TOKEN:
-    auth_verifier = StaticTokenVerifier(
-        tokens={
-            "kyle-dev-token": {
-                "client_id": "kfinken@finkenfive.com",
-            },
-        },
-    )
-
-mcp = FastMCP("Todoist MCP", auth=auth_verifier)
-mcp.add_middleware(RequestLoggingMiddleware())
+mcp = FastMCP("Todoist MCP")
 
 def auth_headers() -> Dict[str, str]:
     return {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
@@ -68,7 +27,9 @@ def format_task_for_llm(task: Dict[str, Any]) -> Dict[str, Any]:
     # Add due date if present
     if task.get("due"):
         formatted_task["due_date"] = task["due"]["string"]
-        formatted_task["is_overdue"] = task["due"]["date"] < "2025-09-14"  # Today's date
+        # Compare with today's date in YYYY-MM-DD format
+        today = date.today().strftime("%Y-%m-%d")
+        formatted_task["is_overdue"] = task["due"]["date"] < today
     
     # Add priority (1=normal, 2=high, 3=very high, 4=urgent)
     priority_map = {1: "normal", 2: "high", 3: "very high", 4: "urgent"}
@@ -80,17 +41,33 @@ def format_task_for_llm(task: Dict[str, Any]) -> Dict[str, Any]:
     
     return formatted_task
 
-@mcp.tool(description="List today + overdue tasks in LLM-friendly format",)
+@mcp.tool(description="List todoist tasks for today.",)
 async def todoist_list_today(limit: int = 25) -> List[Dict[str, Any]]:
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(f"{TODOIST_API}/tasks/filter", headers=auth_headers(),
-                             params={"query": "(today | overdue)", "limit": limit})
-        r.raise_for_status()
-        raw_tasks = r.json().get("results", [])
-        
-        # Transform to LLM-friendly format
-        formatted_tasks = [format_task_for_llm(task) for task in raw_tasks]
-        return formatted_tasks
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            print(f"Making request to Todoist API with query: (today), limit: {limit}")
+            r = await client.get(f"{TODOIST_API}/tasks/filter", headers=auth_headers(),
+                                 params={"query": "(today)", "limit": limit})
+            
+            print(f"Todoist API response status: {r.status_code}")
+            if r.status_code != 200:
+                print(f"Todoist API error response: {r.text}")
+            
+            r.raise_for_status()
+            response_data = r.json()
+            raw_tasks = response_data.get("results", [])
+            
+            print(f"Retrieved {len(raw_tasks)} tasks from Todoist")
+            
+            formatted_tasks = [format_task_for_llm(task) for task in raw_tasks]
+            return formatted_tasks
+            
+    except httpx.HTTPStatusError as e:
+        print(f"HTTP error calling Todoist API: {e.response.status_code} - {e.response.text}")
+        raise Exception(f"Todoist API returned {e.response.status_code}: {e.response.text}")
+    except Exception as e:
+        print(f"Unexpected error calling Todoist API: {str(e)}")
+        raise Exception(f"Failed to fetch tasks: {str(e)}")
 
 if __name__ == "__main__":
     mcp.run(transport="http", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), stateless_http=True)
