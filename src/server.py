@@ -45,12 +45,10 @@ auth_verifier = None
 if BEARER_TOKEN:
     auth_verifier = StaticTokenVerifier(
         tokens={
-            BEARER_TOKEN: {
-                "client_id": "todoist-mcp-client",
-                "scopes": ["read:tasks", "write:tasks"]
-            }
+            "kyle-dev-token": {
+                "client_id": "kfinken@finkenfive.com",
+            },
         },
-        required_scopes=["read:tasks"]
     )
 
 mcp = FastMCP("Todoist MCP", auth=auth_verifier)
@@ -82,7 +80,7 @@ def format_task_for_llm(task: Dict[str, Any]) -> Dict[str, Any]:
     
     return formatted_task
 
-@mcp.tool(description="List today + overdue tasks in LLM-friendly format")
+@mcp.tool(description="List today + overdue tasks in LLM-friendly format",)
 async def todoist_list_today(limit: int = 25) -> List[Dict[str, Any]]:
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.get(f"{TODOIST_API}/tasks/filter", headers=auth_headers(),
